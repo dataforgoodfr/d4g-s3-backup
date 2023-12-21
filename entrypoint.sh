@@ -49,7 +49,7 @@ cleanup() {
   if [ "$PROM_METRICS" == "true" ]; then
     write_metrics
   fi
-  if [ "$FAILURE" != 0]; then
+  if [ "$FAILURE" != 0 ]; then
     error "Backup for $SERVICE_NAME $(date +%Y-%m-%d) failed."
   fi
   exit 0
@@ -86,7 +86,6 @@ setup_colors() {
     # shellcheck disable=SC2034
     NOCOLOR='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' ORANGE='\033[0;33m' BLUE='\033[0;34m' PURPLE='\033[0;35m' CYAN='\033[0;36m' YELLOW='\033[1;33m'
   else
-    echo "coucou"
     NOCOLOR='' RED='' GREEN='' ORANGE='' BLUE='' PURPLE='' CYAN='' YELLOW=''
   fi
 }
