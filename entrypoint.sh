@@ -8,19 +8,18 @@ usage() {
 USAGE docker run -it --rm -v /var/data:/data -v /opt/backups:/backups ghcr.io/dataforgoodfr/d4g-s3-backup \\
   [--access-key="<access_key>"] \\
   [--secret-key="<secret_key>"] \\
-  [--bucket-name="backups"] \\
-  [--host-base="%(bucket)s.s3.fr-par.scw.cloud"] \\
-  [--data-dir="/data"] \\
   [--backups-dir="/backups"] \\
-  [--service-name="service"] \\
-  [--retention-days=30] \\
+  [--bucket-name="backups"] \\
   [--bucket-region="fr-par"] \\
+  [--data-dir="/data"] \\
+  [--host-base="%(bucket)s.s3.fr-par.scw.cloud"] \\
   [--prom-metrics] \\
+  [--retention-days=30] \\
+  [--service-name="service"] \\
   [--debug] \\
   [--help]
 
 Create backups for a specific dir easily and sync them to an s3 compatible bucket.
-This script also supports publishing prometheu-compatible metrics through the Textfile Collector.
 
 Data from <data_dir> will be backed up to <backups-dir>/<service-name>/<service-name>-$(date +%Y-%m-%d).tar.gz
 Files will be keps around for <retention-days> days.
@@ -28,18 +27,18 @@ Files will be synced to s3 under s3://<bucket-name>/<service-name> using supplie
 
 Supported parameters :
 -h, --help : display this message
---debug : Print configuration before running (Optional)
---access-key : AWS access key (Required)
---secret-key : AWS secret key (Required)
---bucket-name : name of the bucket to sync backups to (Optional, Default backups)
---data-dir : directory to backup (Optional, Default ./data)
---service-name : name of the service to backup (Optional, Default service)
---backups-dir : backups root directory where will be stored (Optional, Default /opt/backups/)
---host-bucket : Bucket host base (Optional, Default \${BUCKET_NAME}s.s3.fr-par.scw.cloud)
---host-base : S3 host base (Optional, Default %(bucket)s.s3.fr-par.scw.cloud)
---bucket-region : S3 bucket region (Optional, Default fr-par)
---retention-days : number of days to keep backups (Default 30)
---prom-metrics : enable prometheus metrics (Default false)
+--access-key : AWS-format access key (Required, also set by environment variable ACCESS_KEY)
+--secret-key : AWS-format secret key (Required, also set by environment variable SECRET_KEY)
+--backups-dir : backups root directory where will be stored (Optional, Default /opt/backups/, also set by environment variable BACKUPS_DIR)
+--bucket-name : name of the bucket to sync backups to (Optional, Default backups, also set by environment variable BUCKET_NAME)
+--bucket-region : S3 bucket region (Optional, Default fr-par, also set by environment variable BUCKET_REGION)
+--data-dir : directory to backup (Optional, Default ./data, also set by environment variable DATA_DIR)
+--host-base : S3 host base (Optional, Default %(bucket)s.s3.fr-par.scw.cloud, also set by environment variable HOST_BASE)
+--host-bucket : Bucket host base (Optional, Default \${BUCKET_NAME}s.s3.fr-par.scw.cloud, also set by environment variable HOST_BUCKET)
+--prom-metrics : enable prometheus metrics (Optional, Default false, also set by environment variable PROM_METRICS)
+--prune : prune backups older than retention-days on remote s3 bucket (Optional, Default false, also set by environment variable PRUNE)
+--retention-days : number of days to keep backups (Default 30, also set by environment variable RETENTION_DAYS)
+--service-name : name of the service to backup (Optional, Default service, also set by environment variable SERVICE_NAME)
 EOF
   exit 1
 }
@@ -52,33 +51,6 @@ cleanup() {
   if [ "$FAILURE" != 0 ]; then
     error "Backup for $SERVICE_NAME $(date +%Y-%m-%d) failed."
   fi
-  exit 0
-}
-
-function write_metrics() {
-  # Write out metrics to a temporary file.
-  END="$(date +%s)"
-  # Last successful timestamp is now
-  TIMESTAMP="$END"
-  if [ "$FAILURE" != 0 ]; then
-    TIMESTAMP="0"
-  fi
-  cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
-# HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
-# TYPE ${SERVICE_NAME}_backup_duration counter
-${SERVICE_NAME}_backup_duration $((END - START))
-# HELP ${SERVICE_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
-# TYPE ${SERVICE_NAME}_backup_failure gauge
-${SERVICE_NAME}_backup_failure $FAILURE
-# HELP ${SERVICE_NAME}_backup_last_time Timestamp of last successful backup
-# TYPE ${SERVICE_NAME}_backup_last_time gauge
-${SERVICE_NAME}_backup_last_time $TIMESTAMP
-EOF
-
-  # Rename the temporary file atomically.
-  # This avoids the node exporter seeing half a file.
-  mv "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$" \
-    "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom"
 }
 
 setup_colors() {
@@ -99,9 +71,50 @@ error() {
 }
 
 debug() {
-  if [ "$DEBUG" == 'true' ]; then
+  if [ "$DEBUG" != "false" ]; then
     echo -e "$1"
   fi
+}
+
+function write_metrics() {
+  # Write out metrics to a temporary file.
+  END="$(date +%s)"
+  # Last successful timestamp is now
+  TIMESTAMP="$END"
+  if [ "$FAILURE" != 0 ]; then
+    TIMESTAMP="0"
+  fi
+  cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
+# HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
+# TYPE ${SERVICE_NAME}_backup_duration counter
+${SERVICE_NAME}_backup_duration $((END  START))
+# HELP ${SERVICE_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
+# TYPE ${SERVICE_NAME}_backup_failure gauge
+${SERVICE_NAME}_backup_failure $FAILURE
+# HELP ${SERVICE_NAME}_backup_last_time Timestamp of last successful backup
+# TYPE ${SERVICE_NAME}_backup_last_time gauge
+${SERVICE_NAME}_backup_last_time $TIMESTAMP
+EOF
+
+  # Rename the temporary file atomically.
+  # This avoids the node exporter seeing half a file.
+  mv "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$" \
+    "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom"
+}
+
+function prune_s3_files () {
+  debug "Pruning backups older than $RETENTION_DAYS in ${BUCKET_PATH}"
+  /usr/bin/s3cmd --config=/.s3cfg ls "${BUCKET_PATH}" | while read FILE; do
+    FILE_DATE=$(echo "$FILE" | awk '{print $1}')
+    FILE_NAME=$(echo "$FILE" | awk '{print $4}')
+    FILE_DATE=$(date -d "$FILE_DATE" +%s)
+    RETENTION_DATE="$(date -d "-$RETENTION_DAYS days" +%s)"
+    if [ "$FILE_DATE" -lt "$RETENTION_DATE" ]; then
+      debug "Removing $FILE_NAME. Date: $FILE_DATE. Retention date: $RETENTION_DATE"
+      /usr/bin/s3cmd --config=/.s3cfg del "$FILE_NAME"
+    fi
+  done
+  debug "Bucket pruning complete."
 }
 
 parse_params() {
@@ -115,18 +128,19 @@ parse_params() {
   START="$(date +%s)"
 
   # Sane defaults
-  DEBUG="false"
-  DATA_DIR="/data"
-  SERVICE_NAME="app"
-  BACKUPS_DIR="/backups"
-  BUCKET_NAME="backups"
-  HOST_BASE="s3.fr-par.scw.cloud"
-  HOST_BUCKET="%(bucket)s.s3.fr-par.scw.cloud"
-  BUCKET_REGION="fr-par"
-  RETENTION_DAYS="30"
-  PROM_METRICS="false"
-  ACCESS_KEY=""
-  SECRET_KEY=""
+  DEBUG="${DEBUG:-false}"
+  DATA_DIR="${DATA_DIR:-/data}"
+  SERVICE_NAME="${SERVICE_NAME:-app}"
+  BACKUPS_DIR="${BACKUPS_DIR:-/backups}"
+  BUCKET_NAME="${BUCKET_NAME:-backups}"
+  HOST_BASE="${HOST_BASE:-s3.fr-par.scw.cloud}"
+  HOST_BUCKET="${HOST_BUCKET:-%(bucket)s.s3.fr-par.scw.cloud}"
+  BUCKET_REGION="${BUCKET_REGION:-fr-par}"
+  RETENTION_DAYS="${RETENTION_DAYS:-30}"
+  ACCESS_KEY="${ACCESS_KEY:-}"
+  SECRET_KEY="${SECRET_KEY:-}"
+  PROM_METRICS="${PROM_METRICS:-false}"
+  PRUNE="${PRUNE:-false}"
 
   while :; do
     case "${1-}" in
@@ -169,6 +183,9 @@ parse_params() {
     --prom-metrics*)
       PROM_METRICS="true"
       ;;
+    --prune*)
+      PRUNE="true"
+      ;;
     -?*)
       echo "Unknown option: $1"
       usage
@@ -194,6 +211,21 @@ parse_params() {
   BACKUP_DIR="${BACKUPS_DIR}/${SERVICE_NAME}/"
   BACKUP_FILE="${BACKUP_DIR}${SERVICE_NAME}-$(date +%Y-%m-%d).tar.gz"
   BUCKET_PATH="s3://${BUCKET_NAME}/${SERVICE_NAME}/"
+
+  debug "Configuration"
+  debug "ACCESS_KEY: $ACCESS_KEY"
+  debug "SECRET_KEY: $SECRET_KEY"
+  debug "BACKUPS_DIR: $BACKUPS_DIR"
+  debug "BUCKET_NAME: $BUCKET_NAME"
+  debug "BUCKET_REGION: $BUCKET_REGION"
+  debug "DATA_DIR: $DATA_DIR"
+  debug "DEBUG: $DEBUG"
+  debug "HOST_BASE: $HOST_BASE"
+  debug "HOST_BUCKET: $HOST_BUCKET"
+  debug "PROM_METRICS: $PROM_METRICS"
+  debug "PRUNE: $PRUNE"
+  debug "RETENTION_DAYS: $RETENTION_DAYS"
+  debug "SERVICE_NAME: $SERVICE_NAME"
 
   return 0
 }
@@ -223,7 +255,7 @@ debug "Creating backups directory : ${BACKUP_DIR}"
 mkdir -p "${BACKUP_DIR}"
 
 # Cleanup backups that are older than RETENTION_DAYS days
-debug "Finding backups older than $RETENTION_DAYS in ${BACKUP_DIR}"
+debug "Removing local backups older than $RETENTION_DAYS in ${BACKUP_DIR}"
 find "${BACKUP_DIR}" -type f -name "${SERVICE_NAME}-*.tar.gz" -mtime +"$RETENTION_DAYS" -exec rm -f {} \;
 
 debug "Compressing files to ${BACKUP_FILE}"
@@ -231,6 +263,11 @@ tar -czf "${BACKUP_FILE}" ./
 
 debug "Uploading ${BACKUP_DIR} to ${BUCKET_PATH}"
 /usr/bin/s3cmd --config=/.s3cfg sync "${BACKUP_DIR}" "${BUCKET_PATH}"
+
+# Now pruning old backups
+if [ "$PRUNE" != "false" ]; then
+  prune_s3_files
+fi
 FAILURE=0
 
 info "Backup for $SERVICE_NAME $(date +%Y-%m-%d) completed successfully."

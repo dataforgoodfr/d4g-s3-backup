@@ -1,4 +1,4 @@
-FROM debian:sid-slim
+FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source = "https://github.com/dataforgoodfr/d4g-s3-backup"
 LABEL org.opencontainers.image.authors = "Data For Good"
