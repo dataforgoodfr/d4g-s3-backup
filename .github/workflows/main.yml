@@ -36,3 +36,11 @@ jobs:
           --push \
           --platform=linux/amd64,linux/arm64,linux/armhf \
           -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -f ./Dockerfile ./
+      - name: Also create tagged image if tag exists
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          docker buildx build \
+          --push \
+          --platform=linux/amd64,linux/arm64,linux/armhf \
+          -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG -f ./Dockerfile ./
