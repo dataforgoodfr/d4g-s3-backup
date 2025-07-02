@@ -12,6 +12,7 @@ USAGE docker run -it --rm -v /var/data:/data -v /opt/backups:/backups ghcr.io/da
   [--bucket-name="backups"] \\
   [--bucket-region="fr-par"] \\
   [--data-dir="/data"] \\
+  [--dry-run] \\
   [--host-base="%(bucket)s.s3.fr-par.scw.cloud"] \\
   [--prom-metrics] \\
   [--retention-days=30] \\
@@ -33,6 +34,7 @@ Supported parameters :
 --bucket-name : name of the bucket to sync backups to (Optional, Default backups, also set by environment variable BUCKET_NAME)
 --bucket-region : S3 bucket region (Optional, Default fr-par, also set by environment variable BUCKET_REGION)
 --data-dir : directory to backup (Optional, Default ./data, also set by environment variable DATA_DIR)
+--dry-run : Pruning will not actually delete remote files from the S3. Useful in conjonction with --debug (Optional, default false, also set by environment variable DRY_RUN)
 --host-base : S3 host base (Optional, Default %(bucket)s.s3.fr-par.scw.cloud, also set by environment variable HOST_BASE)
 --host-bucket : Bucket host base (Optional, Default \${BUCKET_NAME}s.s3.fr-par.scw.cloud, also set by environment variable HOST_BUCKET)
 --prom-metrics : enable prometheus metrics (Optional, Default false, also set by environment variable PROM_METRICS)
@@ -45,11 +47,23 @@ EOF
 
 cleanup() {
   trap - SIGINT SIGTERM ERR EXIT
+  cleanup_temp_files
   if [ "$PROM_METRICS" == "true" ]; then
     write_metrics
   fi
   if [ "$FAILURE" != 0 ]; then
     error "Backup for $SERVICE_NAME $(date +%Y-%m-%d) failed."
+  fi
+}
+
+cleanup_temp_files() {
+  if [ -n "${TEMP_DIR:-}" ] && [ -d "$TEMP_DIR" ]; then
+    debug "Cleaning up temporary directory: $TEMP_DIR"
+    rm -rf "$TEMP_DIR"
+  fi
+  if [ -n "${TEMP_BACKUP_FILE:-}" ] && [ -f "$TEMP_BACKUP_FILE" ]; then
+    debug "Cleaning up temporary backup file: $TEMP_BACKUP_FILE"
+    rm -f "$TEMP_BACKUP_FILE"
   fi
 }
 
@@ -70,6 +84,11 @@ error() {
   echo -e "${RED}$*${NOCOLOR}"
 }
 
+die() {
+  error "$*"
+  exit 1
+}
+
 debug() {
   if [ "$DEBUG" != "false" ]; then
     echo -e "$1"
@@ -87,7 +106,7 @@ function write_metrics() {
   cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
 # HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
 # TYPE ${SERVICE_NAME}_backup_duration counter
-${SERVICE_NAME}_backup_duration $((END  START))
+${SERVICE_NAME}_backup_duration $( (END  START) )
 # HELP ${SERVICE_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
 # TYPE ${SERVICE_NAME}_backup_failure gauge
 ${SERVICE_NAME}_backup_failure $FAILURE
@@ -103,18 +122,38 @@ EOF
 }
 
 function prune_s3_files () {
-  debug "Pruning backups older than $RETENTION_DAYS in ${BUCKET_PATH}"
-  /usr/bin/s3cmd --config=/.s3cfg ls "${BUCKET_PATH}" | while read FILE; do
-    FILE_DATE=$(echo "$FILE" | awk '{print $1}')
-    FILE_NAME=$(echo "$FILE" | awk '{print $4}')
-    FILE_DATE=$(date -d "$FILE_DATE" +%s)
-    RETENTION_DATE="$(date -d "-$RETENTION_DAYS days" +%s)"
-    if [ "$FILE_DATE" -lt "$RETENTION_DATE" ]; then
-      debug "Removing $FILE_NAME. Date: $FILE_DATE. Retention date: $RETENTION_DATE"
-      /usr/bin/s3cmd --config=/.s3cfg del "$FILE_NAME"
+  debug "Pruning backups older than $RETENTION_DAYS days in ${BUCKET_PATH}"
+
+  # Calculate cutoff date (RETENTION_DAYS ago from today)
+  CUTOFF_DATE=$(date -d "-$RETENTION_DAYS days" +%Y-%m-%d)
+  debug "Cutoff date for pruning: $CUTOFF_DATE"
+
+  # List S3 files and extract just the filenames
+  /usr/bin/s3cmd --config=/.s3cfg ls "${BUCKET_PATH}" | awk '{print $4}' | while read -r FILE_PATH; do
+    if [ -n "$FILE_PATH" ]; then
+      FILE_NAME=$(basename "$FILE_PATH")
+
+      # Extract date from filename pattern: service-name-YYYY-MM-DD.tar.gz
+      if [[ $FILE_NAME =~ ${SERVICE_NAME}-([0-9]{4}-[0-9]{2}-[0-9]{2})\.tar\.gz$ ]]; then
+        FILE_DATE="${BASH_REMATCH[1]}"
+
+        # Compare dates (string comparison works for YYYY-MM-DD format)
+        if [[ "$FILE_DATE" < "$CUTOFF_DATE" ]]; then
+          if [ "$DRY_RUN" == "false" ]; then
+            debug "Removing $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE"
+            /usr/bin/s3cmd --config=/.s3cfg del "$FILE_PATH"
+          else
+           debug "Would remove $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE (DRY RUN IS ON)."
+          fi
+        else
+          debug "Keeping $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE"
+        fi
+      else
+        debug "Skipping $FILE_NAME - doesn't match expected filename pattern"
+      fi
     fi
   done
-  debug "Bucket pruning complete."
+  debug "S3 bucket pruning complete."
 }
 
 parse_params() {
@@ -141,6 +180,7 @@ parse_params() {
   SECRET_KEY="${SECRET_KEY:-}"
   PROM_METRICS="${PROM_METRICS:-false}"
   PRUNE="${PRUNE:-false}"
+  DRY_RUN="${DRY_RUN:-false}"
 
   while :; do
     case "${1-}" in
@@ -186,6 +226,9 @@ parse_params() {
     --prune*)
       PRUNE="true"
       ;;
+    --dry-run*)
+      DRY_RUN="true"
+      ;;
     -?*)
       echo "Unknown option: $1"
       usage
@@ -220,6 +263,7 @@ parse_params() {
   debug "BUCKET_REGION: $BUCKET_REGION"
   debug "DATA_DIR: $DATA_DIR"
   debug "DEBUG: $DEBUG"
+  debug "DRY_RUN: $DRY_RUN"
   debug "HOST_BASE: $HOST_BASE"
   debug "HOST_BUCKET: $HOST_BUCKET"
   debug "PROM_METRICS: $PROM_METRICS"
@@ -243,12 +287,46 @@ create_s3_config() {
   debug "$(cat /.s3cfg)"
 }
 
+create_atomic_backup() {
+  debug "Starting atomic backup process for $SERVICE_NAME"
+
+  # To make the backup atomic we first create a copy of the data directory.
+  TEMP_DIR=$(mktemp -d -t "backup-${SERVICE_NAME}-XXXXXXXX")
+  TEMP_DATA_DIR="$TEMP_DIR/data"
+  debug "Creating atomic copy of $DATA_DIR to $TEMP_DATA_DIR"
+
+  # Use rsync for reliable copying with proper handling of permissions, symlinks, etc.
+  rsync -qav --delete "$DATA_DIR/" "$TEMP_DATA_DIR/" || die "Failed to create atomic copy of data directory"
+  debug "Atomic copy completed successfully to $TEMP_DATA_DIR"
+
+  # Create tar with temporary name first
+  TEMP_BACKUP_FILE="${BACKUP_FILE}.tmp.$$"
+  debug "Creating tar archive: $TEMP_BACKUP_FILE from $TEMP_DATA_DIR"
+
+  tar -czf "$TEMP_BACKUP_FILE" -C "$TEMP_DATA_DIR" . || die "Failed to create tar archive"
+  debug "Tar archive created successfully"
+
+  tar -tzf "$TEMP_BACKUP_FILE" > /dev/null 2>&1 || die "Failed to verify tar archive"
+  mv "$TEMP_BACKUP_FILE" "$BACKUP_FILE" || die "Failed to move temporary backup file"
+
+  debug "Atomic backup created successfully: $BACKUP_FILE"
+  return 0
+}
+
 setup_colors
 parse_params "$@"
 create_s3_config
 
-cd "$DATA_DIR"
+# Validate that DATA_DIR exists and is readable
+if [ ! -d "$DATA_DIR" ]; then
+  error "Data directory does not exist: $DATA_DIR"
+  exit 1
+fi
 
+if [ ! -r "$DATA_DIR" ]; then
+  error "Data directory is not readable: $DATA_DIR"
+  exit 1
+fi
 
 # Create backup directory for service if it doesn't exist.
 debug "Creating backups directory : ${BACKUP_DIR}"
@@ -258,8 +336,11 @@ mkdir -p "${BACKUP_DIR}"
 debug "Removing local backups older than $RETENTION_DAYS in ${BACKUP_DIR}"
 find "${BACKUP_DIR}" -type f -name "${SERVICE_NAME}-*.tar.gz" -mtime +"$RETENTION_DAYS" -exec rm -f {} \;
 
-debug "Compressing files to ${BACKUP_FILE}"
-tar -czf "${BACKUP_FILE}" ./
+# Create atomic backup
+if ! create_atomic_backup; then
+  error "Atomic backup creation failed"
+  exit 1
+fi
 
 debug "Uploading ${BACKUP_DIR} to ${BUCKET_PATH}"
 /usr/bin/s3cmd --config=/.s3cfg sync "${BACKUP_DIR}" "${BUCKET_PATH}"
