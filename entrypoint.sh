@@ -139,9 +139,11 @@ function prune_s3_files () {
 
         # Compare dates (string comparison works for YYYY-MM-DD format)
         if [[ "$FILE_DATE" < "$CUTOFF_DATE" ]]; then
-          debug "Removing $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE"
-          if [[ $DRY_RUN != "false" ]]; then
+          if [ "$DRY_RUN" == "false" ]; then
+            debug "Removing $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE"
             /usr/bin/s3cmd --config=/.s3cfg del "$FILE_PATH"
+          else
+           debug "Would remove $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE (DRY RUN IS ON)."
           fi
         else
           debug "Keeping $FILE_PATH. File date: $FILE_DATE. Cutoff date: $CUTOFF_DATE"
@@ -261,6 +263,7 @@ parse_params() {
   debug "BUCKET_REGION: $BUCKET_REGION"
   debug "DATA_DIR: $DATA_DIR"
   debug "DEBUG: $DEBUG"
+  debug "DRY_RUN: $DRY_RUN"
   debug "HOST_BASE: $HOST_BASE"
   debug "HOST_BUCKET: $HOST_BUCKET"
   debug "PROM_METRICS: $PROM_METRICS"
@@ -288,7 +291,7 @@ create_atomic_backup() {
   info "Starting atomic backup process for $SERVICE_NAME"
 
   # To make the backup atomic we first create a copy of the data directory.
-  TEMP_DIR=$(mktemp -d -t "backup-${SERVICE_NAME}-$(date +%Y%m%d)")
+  TEMP_DIR=$(mktemp -d -t "backup-${SERVICE_NAME}-XXXXXXXX")
   TEMP_DATA_DIR="$TEMP_DIR/data"
   debug "Creating atomic copy of $DATA_DIR to $TEMP_DATA_DIR"
 
@@ -297,7 +300,7 @@ create_atomic_backup() {
   debug "Atomic copy completed successfully to $TEMP_DATA_DIR"
 
   # Create tar with temporary name first
-  BACKUP_FILE="${BACKUP_FILE}.tmp.$$"
+  TEMP_BACKUP_FILE="${BACKUP_FILE}.tmp.$$"
   debug "Creating tar archive: $TEMP_BACKUP_FILE from $TEMP_DATA_DIR"
 
   tar -czf "$TEMP_BACKUP_FILE" -C "$TEMP_DATA_DIR" . || die "Failed to create tar archive"
