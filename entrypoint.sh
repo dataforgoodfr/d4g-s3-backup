@@ -288,7 +288,7 @@ create_s3_config() {
 }
 
 create_atomic_backup() {
-  info "Starting atomic backup process for $SERVICE_NAME"
+  debug "Starting atomic backup process for $SERVICE_NAME"
 
   # To make the backup atomic we first create a copy of the data directory.
   TEMP_DIR=$(mktemp -d -t "backup-${SERVICE_NAME}-XXXXXXXX")
@@ -296,7 +296,7 @@ create_atomic_backup() {
   debug "Creating atomic copy of $DATA_DIR to $TEMP_DATA_DIR"
 
   # Use rsync for reliable copying with proper handling of permissions, symlinks, etc.
-  rsync -av --delete "$DATA_DIR/" "$TEMP_DATA_DIR/" || die "Failed to create atomic copy of data directory"
+  rsync -qav --delete "$DATA_DIR/" "$TEMP_DATA_DIR/" || die "Failed to create atomic copy of data directory"
   debug "Atomic copy completed successfully to $TEMP_DATA_DIR"
 
   # Create tar with temporary name first
@@ -309,7 +309,7 @@ create_atomic_backup() {
   tar -tzf "$TEMP_BACKUP_FILE" > /dev/null 2>&1 || die "Failed to verify tar archive"
   mv "$TEMP_BACKUP_FILE" "$BACKUP_FILE" || die "Failed to move temporary backup file"
 
-  info "Atomic backup created successfully: $BACKUP_FILE"
+  debug "Atomic backup created successfully: $BACKUP_FILE"
   return 0
 }
 
