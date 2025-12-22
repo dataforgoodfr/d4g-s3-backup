@@ -106,7 +106,7 @@ function write_metrics() {
   cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
 # HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
 # TYPE ${SERVICE_NAME}_backup_duration counter
-${SERVICE_NAME}_backup_duration $( (END  START) )
+${SERVICE_NAME}_backup_duration $((END - START))
 # HELP ${SERVICE_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
 # TYPE ${SERVICE_NAME}_backup_failure gauge
 ${SERVICE_NAME}_backup_failure $FAILURE
@@ -179,6 +179,7 @@ parse_params() {
   ACCESS_KEY="${ACCESS_KEY:-}"
   SECRET_KEY="${SECRET_KEY:-}"
   PROM_METRICS="${PROM_METRICS:-false}"
+  TEXTFILE_COLLECTOR_DIR="${TEXTFILE_COLLECTOR_DIR:-/var/lib/prometheus/node-exporter}"
   PRUNE="${PRUNE:-false}"
   DRY_RUN="${DRY_RUN:-false}"
 
