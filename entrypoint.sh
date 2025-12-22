@@ -103,23 +103,26 @@ function write_metrics() {
   if [ "$FAILURE" != 0 ]; then
     TIMESTAMP="0"
   fi
+  # Sanitize service name for Prometheus metric names (replace hyphens with underscores)
+  # Prometheus metric names must match [a-zA-Z_:][a-zA-Z0-9_:]*
+  METRIC_NAME="${SERVICE_NAME//-/_}"
   mkdir -p "$TEXTFILE_COLLECTOR_DIR"
-  cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
-# HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
-# TYPE ${SERVICE_NAME}_backup_duration counter
-${SERVICE_NAME}_backup_duration $((END - START))
-# HELP ${SERVICE_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
-# TYPE ${SERVICE_NAME}_backup_failure gauge
-${SERVICE_NAME}_backup_failure $FAILURE
-# HELP ${SERVICE_NAME}_backup_last_time Timestamp of last successful backup
-# TYPE ${SERVICE_NAME}_backup_last_time gauge
-${SERVICE_NAME}_backup_last_time $TIMESTAMP
+  cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${METRIC_NAME}_backup.prom.$$"
+# HELP ${METRIC_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
+# TYPE ${METRIC_NAME}_backup_duration counter
+${METRIC_NAME}_backup_duration $((END - START))
+# HELP ${METRIC_NAME}_backup_failure Result of the planned ${SERVICE_NAME} backup
+# TYPE ${METRIC_NAME}_backup_failure gauge
+${METRIC_NAME}_backup_failure $FAILURE
+# HELP ${METRIC_NAME}_backup_last_time Timestamp of last successful backup
+# TYPE ${METRIC_NAME}_backup_last_time gauge
+${METRIC_NAME}_backup_last_time $TIMESTAMP
 EOF
 
   # Rename the temporary file atomically.
   # This avoids the node exporter seeing half a file.
-  mv "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$" \
-    "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom"
+  mv "$TEXTFILE_COLLECTOR_DIR/${METRIC_NAME}_backup.prom.$$" \
+    "$TEXTFILE_COLLECTOR_DIR/${METRIC_NAME}_backup.prom"
 }
 
 function prune_s3_files () {
