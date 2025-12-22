@@ -103,6 +103,7 @@ function write_metrics() {
   if [ "$FAILURE" != 0 ]; then
     TIMESTAMP="0"
   fi
+  mkdir -p "$TEXTFILE_COLLECTOR_DIR"
   cat << EOF > "$TEXTFILE_COLLECTOR_DIR/${SERVICE_NAME}_backup.prom.$$"
 # HELP ${SERVICE_NAME}_backup_duration Duration of the planned ${SERVICE_NAME} backup
 # TYPE ${SERVICE_NAME}_backup_duration counter
